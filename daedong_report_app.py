@@ -83,17 +83,15 @@ except Exception:
 
 @st.cache_resource
 def get_gsheet_client():
-    """Google Sheets 인증 클라이언트 (캐시됨)"""
     try:
         creds = Credentials.from_service_account_info(
             st.secrets["gcp_service_account"], scopes=SCOPES
         )
         return gspread.authorize(creds)
-    except Exception as e:
+    except Exception:
         return None
 
 def get_or_create_worksheet(client, zone_id):
-    """구역별 시트 가져오기. 없으면 헤더 포함 자동 생성."""
     try:
         spreadsheet = client.open_by_key(SHEET_ID)
         sheet_name = f"zone{zone_id}"
@@ -103,7 +101,7 @@ def get_or_create_worksheet(client, zone_id):
             worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=50000, cols=10)
             worksheet.append_row(HEADERS)
         return worksheet
-    except Exception as e:
+    except Exception:
         return None
 
 def safe_float(val):
@@ -116,7 +114,6 @@ def safe_float(val):
         return ""
 
 def to_sheet_val(v):
-    """np.nan 및 None → 빈 문자열로 변환 (Sheets 직렬화 오류 방지)"""
     if v is None or v == "":
         return ""
     if isinstance(v, float) and np.isnan(v):
@@ -124,26 +121,20 @@ def to_sheet_val(v):
     return v
 
 def fetch_and_save_data(zone_id):
-    """API 호출 후 Google Sheets에 저장"""
     url = f"{API_BASE}/{zone_id}"
     headers = {'User-Agent': 'Mozilla/5.0'}
-
     try:
         resp = requests.get(url, headers=headers, timeout=5)
         if resp.status_code != 200:
             return False, f"[구역{zone_id}] HTTP 오류: {resp.status_code}"
-
         try:
             data = resp.json()
         except json.JSONDecodeError:
             return False, f"[구역{zone_id}] JSON 파싱 실패: {resp.text[:50]}"
-
         if "fields" not in data or len(data["fields"]) == 0:
             return False, f"[구역{zone_id}] fields 안에 데이터 없음"
-
         row = data["fields"][0]
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
         new_row = [
             current_time,
             to_sheet_val(safe_float(row.get("xintemp1"))),
@@ -152,18 +143,14 @@ def fetch_and_save_data(zone_id):
             to_sheet_val(safe_float(row.get("xsunadd"))),
             to_sheet_val(safe_float(row.get("xjuya"))),
         ]
-
         client = get_gsheet_client()
         if not client:
-            return False, f"[구역{zone_id}] Google 인증 실패 (secrets 확인 필요)"
-
+            return False, f"[구역{zone_id}] Google 인증 실패"
         worksheet = get_or_create_worksheet(client, zone_id)
         if not worksheet:
-            return False, f"[구역{zone_id}] 시트 접근 실패 (공유 권한 확인 필요)"
-
+            return False, f"[구역{zone_id}] 시트 접근 실패"
         worksheet.append_row(new_row, value_input_option="USER_ENTERED")
         return True, f"[구역{zone_id}] Sheets 저장 성공 ({current_time})"
-
     except requests.exceptions.Timeout:
         return False, f"[구역{zone_id}] API 연결 시간 초과"
     except Exception as e:
@@ -171,7 +158,6 @@ def fetch_and_save_data(zone_id):
 
 @st.cache_data(ttl=55)
 def load_data(zone_id):
-    """Google Sheets에서 구역별 데이터 로드 (55초 캐시)"""
     client = get_gsheet_client()
     if not client:
         return pd.DataFrame(), "Google 인증 실패"
@@ -181,33 +167,23 @@ def load_data(zone_id):
             worksheet = spreadsheet.worksheet(f"zone{zone_id}")
         except gspread.exceptions.WorksheetNotFound:
             return pd.DataFrame(), "저장된 데이터가 없습니다."
-
-        # ✅ get_all_values()로 raw 데이터 가져온 후 직접 DataFrame 생성
         all_values = worksheet.get_all_values()
         if len(all_values) < 2:
             return pd.DataFrame(), "저장된 데이터가 없습니다."
-
-        # 첫 번째 행이 헤더인지 확인, 아니면 강제로 HEADERS 사용
         first_row = all_values[0]
         if first_row[0] == 'xdatetime':
             df = pd.DataFrame(all_values[1:], columns=all_values[0])
         else:
             df = pd.DataFrame(all_values, columns=HEADERS)
-
-        # 빈 행 제거
         df = df[df['xdatetime'] != '']
         if df.empty:
             return pd.DataFrame(), "저장된 데이터가 없습니다."
-
         df['xdatetime'] = pd.to_datetime(df['xdatetime'], errors='coerce')
         df = df.dropna(subset=['xdatetime'])
-
         for col in ['내부온도(xintemp1)', '내부습도(xinhum1)', 'CO2농도(xco2)', '누적일사량(xsunadd)', '주야간(xjuya)']:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
-
         return df, "성공"
-
     except Exception as e:
         return pd.DataFrame(), f"Sheets 읽기 오류: {e}"
 
@@ -232,16 +208,13 @@ else:
 selected_zone_label = st.sidebar.selectbox("구역 선택", options=list(zone_options.values()), index=0)
 selected_zone_id = [k for k, v in zone_options.items() if v == selected_zone_label][0]
 
-# ✅ 백그라운드에서 전체 구역 데이터 수집 (화면에는 선택 구역만 표시)
+# 전체 구역 백그라운드 수집
 all_results = {}
 for zid in ZONE_CONFIG.keys():
     success, msg = fetch_and_save_data(zid)
     all_results[zid] = (success, msg)
 
-# 선택 구역 결과만 상단 알림에 표시
 api_success, api_msg = all_results[selected_zone_id]
-
-# 선택 구역 데이터만 화면에 로드
 df_all, load_msg = load_data(selected_zone_id)
 
 st.sidebar.markdown("---")
@@ -340,7 +313,7 @@ if len(df_all) == 0:
     st.stop()
 
 # ==========================================
-# 6. 상단 요약 카드
+# 6. 상단 요약 카드 + 신호등 인디케이터
 # ==========================================
 def analyze_violation(data_series, min_th, max_th):
     valid_data = data_series.dropna()
@@ -362,6 +335,7 @@ if len(selected_metrics) > 0:
         c_light  = DAEDONG['light_gray']
         c_white  = DAEDONG['white']
         c_red    = DAEDONG['red']
+        c_green  = DAEDONG['future_green_light']
 
         for metric in selected_metrics:
             if metric not in df_all.columns:
@@ -374,9 +348,11 @@ if len(selected_metrics) > 0:
             if all_zero:
                 ratio_html = f'<div style="color:{c_medium}; font-size:20px; font-weight:bold; margin-bottom:15px;">센서 데이터 없음</div>'
                 bottom_html = f'<div style="color:{c_medium}; font-size:14px;">수집된 유효 데이터가 없습니다</div>'
+                signal_html = f'<div style="font-size:13px; color:{c_medium}; margin-top:12px;">현재값: -</div>'
             else:
                 comp_ratio, viol_mins = analyze_violation(df_all[metric], min_t, max_t)
                 avg_val = round(series.mean(), 1)
+                latest_val = round(series.iloc[-1], 1)
                 viol_color = c_red if viol_mins > 0 else c_light
                 ratio_html = f'<div style="color:{c_white}; font-size:36px; font-weight:bold; margin-bottom:15px;">준수율 {comp_ratio}%</div>'
                 bottom_html = (
@@ -386,11 +362,25 @@ if len(selected_metrics) > 0:
                     f'</div>'
                 )
 
+                # ✅ 신호등: 현재값이 Safe Zone 안/밖 판단
+                in_zone = min_t <= latest_val <= max_t
+                signal_color = c_green if in_zone else c_red
+                signal_icon  = "🟢" if in_zone else "🔴"
+                signal_text  = "Safe Zone 이내" if in_zone else "Safe Zone 이탈"
+                signal_html  = (
+                    f'<div style="margin-top:12px; padding:6px 10px; border-radius:6px; '
+                    f'background-color:{DAEDONG["black"]}; font-size:13px; font-weight:bold; color:{signal_color};">'
+                    f'{signal_icon} 현재 {latest_val} — {signal_text}'
+                    f'<br><span style="color:{c_medium}; font-weight:normal;">기준 {min_t} ~ {max_t}</span>'
+                    f'</div>'
+                )
+
             card_html = (
                 f'<div style="background-color:{c_dark}; padding:25px 20px; border-radius:8px; text-align:center; border:1px solid {c_medium};">'
                 f'<div style="color:{c_light}; font-size:18px; font-weight:bold; margin-bottom:12px;">{metric}</div>'
                 f'{ratio_html}'
                 f'{bottom_html}'
+                f'{signal_html}'
                 f'</div>'
             )
 
@@ -400,9 +390,11 @@ if len(selected_metrics) > 0:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
+    # ✅ 방향 1: 음영 제거 → 상한/하한 점선만 표시
     fig = go.Figure()
     line_colors = [DAEDONG['future_green_light'], DAEDONG['red'], DAEDONG['light_gray']]
     layout_axes = {}
+    chart_metric_idx = 0  # 실제 트레이스가 추가된 수 카운트
 
     for i, metric in enumerate(selected_metrics):
         if metric not in df_all.columns:
@@ -411,31 +403,79 @@ if len(selected_metrics) > 0:
         if len(series) == 0 or (series == 0).all():
             continue
 
-        axis_name = f'y{i+1}' if i > 0 else 'y'
-        fig.add_trace(go.Scatter(
-            x=df_all['xdatetime'], y=df_all[metric], mode='lines+markers',
-            name=metric, line=dict(color=line_colors[i % len(line_colors)], width=3), yaxis=axis_name
-        ))
+        color = line_colors[chart_metric_idx % len(line_colors)]
+        axis_name = f'y{chart_metric_idx + 1}' if chart_metric_idx > 0 else 'y'
         min_t, max_t = thresholds[metric]
-        fig.add_hrect(
-            y0=min_t, y1=max_t, yref=axis_name, fillcolor=line_colors[i % len(line_colors)],
-            opacity=0.1, layer="below", line_width=1, line_dash="dot",
-            annotation_text=f"{metric} Safe Zone", annotation_position="top left",
-            annotation_font_color=DAEDONG['medium_gray']
-        )
-        if i == 0:
-            layout_axes['yaxis'] = dict(title=dict(text=f"<b>{metric}</b>", font=dict(size=16, color=line_colors[0])), showgrid=True, gridcolor=DAEDONG['dark_gray'], tickfont=dict(size=14, color=line_colors[0]))
-        elif i == 1:
-            layout_axes['yaxis2'] = dict(title=dict(text=f"<b>{metric}</b>", font=dict(size=16, color=line_colors[1])), overlaying='y', side='right', showgrid=False, tickfont=dict(size=14, color=line_colors[1]))
-        elif i == 2:
-            layout_axes['yaxis3'] = dict(title=dict(text=f"<b>{metric}</b>", font=dict(size=16, color=line_colors[2])), overlaying='y', side='right', position=0.92, anchor="free", showgrid=False, tickfont=dict(size=14, color=line_colors[2]))
+
+        # 데이터 라인
+        fig.add_trace(go.Scatter(
+            x=df_all['xdatetime'], y=df_all[metric],
+            mode='lines+markers', name=metric,
+            line=dict(color=color, width=2.5),
+            marker=dict(size=4),
+            yaxis=axis_name
+        ))
+
+        # ✅ 상한선 점선
+        fig.add_trace(go.Scatter(
+            x=[df_all['xdatetime'].min(), df_all['xdatetime'].max()],
+            y=[max_t, max_t],
+            mode='lines',
+            name=f'{metric} 상한 ({max_t})',
+            line=dict(color=color, width=1.5, dash='dash'),
+            yaxis=axis_name,
+            showlegend=True,
+            opacity=0.7
+        ))
+
+        # ✅ 하한선 점선
+        fig.add_trace(go.Scatter(
+            x=[df_all['xdatetime'].min(), df_all['xdatetime'].max()],
+            y=[min_t, min_t],
+            mode='lines',
+            name=f'{metric} 하한 ({min_t})',
+            line=dict(color=color, width=1.5, dash='dot'),
+            yaxis=axis_name,
+            showlegend=True,
+            opacity=0.7
+        ))
+
+        if chart_metric_idx == 0:
+            layout_axes['yaxis'] = dict(
+                title=dict(text=f"<b>{metric}</b>", font=dict(size=16, color=color)),
+                showgrid=True, gridcolor=DAEDONG['dark_gray'],
+                tickfont=dict(size=14, color=color)
+            )
+        elif chart_metric_idx == 1:
+            layout_axes['yaxis2'] = dict(
+                title=dict(text=f"<b>{metric}</b>", font=dict(size=16, color=color)),
+                overlaying='y', side='right', showgrid=False,
+                tickfont=dict(size=14, color=color)
+            )
+        elif chart_metric_idx == 2:
+            layout_axes['yaxis3'] = dict(
+                title=dict(text=f"<b>{metric}</b>", font=dict(size=16, color=color)),
+                overlaying='y', side='right', position=0.92, anchor="free",
+                showgrid=False, tickfont=dict(size=14, color=color)
+            )
+
+        chart_metric_idx += 1
 
     fig.update_layout(
         paper_bgcolor=DAEDONG['black'], plot_bgcolor=DAEDONG['black'],
         font=dict(color=DAEDONG['light_gray'], size=14),
-        xaxis=dict(title=dict(text="<b>측정 시각</b>", font=dict(size=16, color=DAEDONG['white'])), tickfont=dict(size=14), showgrid=True, gridcolor=DAEDONG['dark_gray'], domain=[0, 0.9] if len(selected_metrics) > 2 else [0, 1]),
-        legend=dict(font=dict(size=16, color=DAEDONG['white']), orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        margin=dict(l=20, r=20 if len(selected_metrics) <= 2 else 60, t=60, b=20), height=500, **layout_axes
+        xaxis=dict(
+            title=dict(text="<b>측정 시각</b>", font=dict(size=16, color=DAEDONG['white'])),
+            tickfont=dict(size=14), showgrid=True, gridcolor=DAEDONG['dark_gray'],
+            domain=[0, 0.9] if len(selected_metrics) > 2 else [0, 1]
+        ),
+        legend=dict(
+            font=dict(size=13, color=DAEDONG['white']),
+            orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+            bgcolor="rgba(0,0,0,0)"
+        ),
+        margin=dict(l=20, r=20 if len(selected_metrics) <= 2 else 60, t=60, b=20),
+        height=500, **layout_axes
     )
     st.plotly_chart(fig, use_container_width=True)
 
