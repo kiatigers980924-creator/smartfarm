@@ -226,7 +226,7 @@ def load_data(zone_id):
 if os.path.exists("image_8a62a0.png"):
     st.sidebar.image("image_8a62a0.png", use_container_width=True)
 else:
-    st.sidebar.markdown(f"<h2 style='color:{DAEDONG[\"red\"]}'>DAEDONG</h2>", unsafe_allow_html=True)
+    st.sidebar.markdown(f"<h2 style='color:{DAEDONG['red']}'>DAEDONG</h2>", unsafe_allow_html=True)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🏡 온실 및 구역 선택")
