@@ -232,7 +232,16 @@ else:
 selected_zone_label = st.sidebar.selectbox("구역 선택", options=list(zone_options.values()), index=0)
 selected_zone_id = [k for k, v in zone_options.items() if v == selected_zone_label][0]
 
-api_success, api_msg = fetch_and_save_data(selected_zone_id)
+# ✅ 백그라운드에서 전체 구역 데이터 수집 (화면에는 선택 구역만 표시)
+all_results = {}
+for zid in ZONE_CONFIG.keys():
+    success, msg = fetch_and_save_data(zid)
+    all_results[zid] = (success, msg)
+
+# 선택 구역 결과만 상단 알림에 표시
+api_success, api_msg = all_results[selected_zone_id]
+
+# 선택 구역 데이터만 화면에 로드
 df_all, load_msg = load_data(selected_zone_id)
 
 st.sidebar.markdown("---")
