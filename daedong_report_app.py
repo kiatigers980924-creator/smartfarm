@@ -336,22 +336,22 @@ for metric in selected_metrics:
     st.sidebar.markdown(f"**{metric_labels.get(metric, metric)}**")
     c1, c2 = st.sidebar.columns(2)
     # ✅ 지표별 step 분리
-step_map = {
-    '내부온도(xintemp1)': 0.5,
-    '내부습도(xinhum1)': 1.0,
-    'CO2농도(xco2)': 5.0,
-}
-step = step_map.get(metric, 0.5)
-mn = c1.number_input(
-    "Min", step=step,
-    value=float(st.session_state[f"guide_min_{metric}"]),
-    key=f"input_min_{metric}"
-)
-mx = c2.number_input(
-    "Max", step=step,
-    value=float(st.session_state[f"guide_max_{metric}"]),
-    key=f"input_max_{metric}"
-)
+    step_map = {
+        '내부온도(xintemp1)': 0.5,
+        '내부습도(xinhum1)': 1.0,
+        'CO2농도(xco2)': 5.0,
+    }
+    step = step_map.get(metric, 0.5)
+    mn = c1.number_input(
+        "Min", step=step,
+        value=float(st.session_state[f"guide_min_{metric}"]),
+        key=f"input_min_{metric}"
+    )
+    mx = c2.number_input(
+        "Max", step=step,
+        value=float(st.session_state[f"guide_max_{metric}"]),
+        key=f"input_max_{metric}"
+    )
     # session_state 동기화
     st.session_state[f"guide_min_{metric}"] = mn
     st.session_state[f"guide_max_{metric}"] = mx
