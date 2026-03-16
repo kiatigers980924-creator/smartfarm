@@ -316,45 +316,33 @@ loaded_month = st.session_state.get("guide_loaded_month", None)
 if loaded_month:
     st.sidebar.caption(f"현재 적용 중: {loaded_month}월 기준 ±5%")
 
-# ✅ 초기값: session_state 없으면 현재 월 ±5% 기본값
+# ✅ 초기값: input_min/max_* 키가 없으면 현재 월 ±5%로 초기화
 month_guide = GUIDE_DATA.get(current_month, GUIDE_DATA[3])
 default_thresholds = get_default_thresholds(month_guide)
 for metric in available_metrics:
-    if f"guide_min_{metric}" not in st.session_state:
-        st.session_state[f"guide_min_{metric}"] = default_thresholds[metric][0]
-    if f"guide_max_{metric}" not in st.session_state:
-        st.session_state[f"guide_max_{metric}"] = default_thresholds[metric][1]
+    if f"input_min_{metric}" not in st.session_state:
+        st.session_state[f"input_min_{metric}"] = default_thresholds[metric][0]
+    if f"input_max_{metric}" not in st.session_state:
+        st.session_state[f"input_max_{metric}"] = default_thresholds[metric][1]
 
-# ✅ 수정 가능한 min/max 입력 (불러온 후에도 직접 수정 가능)
+# ✅ value= 파라미터 없이 key만 사용 → 불러오기 버튼이 session_state 직접 업데이트 후 rerun
 thresholds = {}
 metric_labels = {
     '내부온도(xintemp1)': '🌡 온도',
     '내부습도(xinhum1)': '💧 습도',
     'CO2농도(xco2)':     '🌿 CO2',
 }
+step_map = {
+    '내부온도(xintemp1)': 0.5,
+    '내부습도(xinhum1)': 1.0,
+    'CO2농도(xco2)':     5.0,
+}
 for metric in selected_metrics:
     st.sidebar.markdown(f"**{metric_labels.get(metric, metric)}**")
     c1, c2 = st.sidebar.columns(2)
-    # ✅ 지표별 step 분리
-    step_map = {
-        '내부온도(xintemp1)': 0.5,
-        '내부습도(xinhum1)': 1.0,
-        'CO2농도(xco2)': 5.0,
-    }
     step = step_map.get(metric, 0.5)
-    mn = c1.number_input(
-        "Min", step=step,
-        value=float(st.session_state[f"guide_min_{metric}"]),
-        key=f"input_min_{metric}"
-    )
-    mx = c2.number_input(
-        "Max", step=step,
-        value=float(st.session_state[f"guide_max_{metric}"]),
-        key=f"input_max_{metric}"
-    )
-    # session_state 동기화
-    st.session_state[f"guide_min_{metric}"] = mn
-    st.session_state[f"guide_max_{metric}"] = mx
+    mn = c1.number_input("Min", step=step, key=f"input_min_{metric}")
+    mx = c2.number_input("Max", step=step, key=f"input_max_{metric}")
     thresholds[metric] = (mn, mx)
 
 # ==========================================
@@ -699,13 +687,13 @@ col2.markdown(render_summary_card("주간온도",  actual['day_t'],   report_gui
 col3.markdown(render_summary_card("야간온도",  actual['night_t'], report_guide['night_t'], "℃"), unsafe_allow_html=True)
 col4.markdown(render_summary_card("주야간차",  actual['diff_t'],  report_guide['diff_t'],  "℃"), unsafe_allow_html=True)
 
-st.markdown("<div style='height: 15px;'></div>", unsafe_allow_html=True)
+st.write('')
 
 col5, col6, col7, col8 = st.columns(4)
 col5.markdown(render_summary_card("평균습도",      actual['hum'], report_guide['hum'], "%"),   unsafe_allow_html=True)
 col6.markdown(render_summary_card("평균 CO2",      actual['co2'], report_guide['co2'], "ppm"), unsafe_allow_html=True)
 col7.markdown(render_summary_card("누적일사량(일)", actual['sun'], report_guide['sun'], "J"),   unsafe_allow_html=True)
-col8.markdown(f"<div style='background-color: transparent; padding: 15px;'></div>", unsafe_allow_html=True)
+pass  # col8 intentionally empty
 
 if auto_refresh:
     time.sleep(60)
