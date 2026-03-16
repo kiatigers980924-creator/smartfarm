@@ -182,11 +182,23 @@ def load_data(zone_id):
         except gspread.exceptions.WorksheetNotFound:
             return pd.DataFrame(), "저장된 데이터가 없습니다."
 
-        records = worksheet.get_all_records()
-        if not records:
+        # ✅ get_all_values()로 raw 데이터 가져온 후 직접 DataFrame 생성
+        all_values = worksheet.get_all_values()
+        if len(all_values) < 2:
             return pd.DataFrame(), "저장된 데이터가 없습니다."
 
-        df = pd.DataFrame(records)
+        # 첫 번째 행이 헤더인지 확인, 아니면 강제로 HEADERS 사용
+        first_row = all_values[0]
+        if first_row[0] == 'xdatetime':
+            df = pd.DataFrame(all_values[1:], columns=all_values[0])
+        else:
+            df = pd.DataFrame(all_values, columns=HEADERS)
+
+        # 빈 행 제거
+        df = df[df['xdatetime'] != '']
+        if df.empty:
+            return pd.DataFrame(), "저장된 데이터가 없습니다."
+
         df['xdatetime'] = pd.to_datetime(df['xdatetime'], errors='coerce')
         df = df.dropna(subset=['xdatetime'])
 
