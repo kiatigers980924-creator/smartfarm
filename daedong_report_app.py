@@ -20,13 +20,11 @@ DAEDONG = {
     'future_green': '#00677B', 'white': '#FFFFFF', 'blue': '#4DA8DA'
 }
 
-# 지표별 데이터 라인 색상
 LINE_COLORS = {
     '내부온도(xintemp1)': '#6AC8C7',
     '내부습도(xinhum1)': '#EF4023',
     'CO2농도(xco2)':     '#DCDCD7',
 }
-# 지표별 상한/하한 점선 색상
 THRESHOLD_COLORS = {
     '내부온도(xintemp1)': {'upper': '#FFD700', 'lower': '#FF8C00'},
     '내부습도(xinhum1)': {'upper': '#FF69B4', 'lower': '#DA70D6'},
@@ -52,13 +50,6 @@ st.markdown(f"""
     .report-title {{ font-size: 28px; font-weight: bold; color: {DAEDONG['white']}; margin-bottom: 0px; }}
     .report-subtitle {{ font-size: 14px; color: {DAEDONG['medium_gray']}; }}
     hr {{ border-color: {DAEDONG['medium_gray']}; }}
-    /* 토글 버튼 스타일 */
-    div[data-testid="stButton"] button {{
-        width: 100%;
-        font-size: 13px;
-        padding: 4px 0;
-        margin-top: 8px;
-    }}
     @media print {{
         body, .stApp, .main {{ background-color: {DAEDONG['black']} !important; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }}
         [data-testid="stSidebar"], [data-testid="stHeader"], [data-testid="stToolbar"], button {{ display: none !important; }}
@@ -333,7 +324,7 @@ if len(df_all) == 0:
     st.stop()
 
 # ==========================================
-# 6. 상단 요약 카드 + 기준선 토글
+# 6. 상단 요약 카드 + 포커스 모드
 # ==========================================
 def analyze_violation(data_series, min_th, max_th):
     valid_data = data_series.dropna()
@@ -343,11 +334,9 @@ def analyze_violation(data_series, min_th, max_th):
     low  = len(valid_data[valid_data < min_th])
     return round(((total - high - low) / total) * 100, 1), (high + low)
 
-# ✅ session_state로 토글 상태 관리 (기본: 모두 OFF)
-for metric in available_metrics:
-    key = f"show_threshold_{metric}"
-    if key not in st.session_state:
-        st.session_state[key] = False
+# ✅ 포커스 상태: None = 전체 표시, 특정 metric = 해당 지표만 단독 표시
+if "focused_metric" not in st.session_state:
+    st.session_state["focused_metric"] = None
 
 if len(selected_metrics) > 0:
     valid_metrics = [m for m in selected_metrics if m in df_all.columns]
@@ -366,11 +355,13 @@ if len(selected_metrics) > 0:
             if metric not in df_all.columns:
                 continue
 
-            min_t, max_t = thresholds[metric]
-            series   = df_all[metric].dropna()
-            all_zero = len(series) == 0 or (series == 0).all()
-            toggle_key = f"show_threshold_{metric}"
-            is_on      = st.session_state[toggle_key]
+            min_t, max_t   = thresholds[metric]
+            series         = df_all[metric].dropna()
+            all_zero       = len(series) == 0 or (series == 0).all()
+            is_focused     = (st.session_state["focused_metric"] == metric)
+            tc             = THRESHOLD_COLORS.get(metric, {'upper': '#FFD700', 'lower': '#FF8C00'})
+            border_color   = tc['upper'] if is_focused else c_medium
+            border_width   = "2px" if is_focused else "1px"
 
             if all_zero:
                 ratio_html  = f'<div style="color:{c_medium}; font-size:20px; font-weight:bold; margin-bottom:15px;">센서 데이터 없음</div>'
@@ -406,11 +397,6 @@ if len(selected_metrics) > 0:
                     f'</div>'
                 )
 
-            # ✅ 토글 ON 상태면 카드 테두리 강조
-            tc = THRESHOLD_COLORS.get(metric, {'upper': '#FFD700', 'lower': '#FF8C00'})
-            border_color = tc['upper'] if is_on else c_medium
-            border_width = "2px" if is_on else "1px"
-
             card_html = (
                 f'<div style="background-color:{c_dark}; padding:25px 20px; border-radius:8px; '
                 f'text-align:center; border:{border_width} solid {border_color};">'
@@ -424,10 +410,10 @@ if len(selected_metrics) > 0:
             with cols[col_idx]:
                 st.markdown(card_html, unsafe_allow_html=True)
 
-                # ✅ 토글 버튼 — 카드 바로 아래
-                btn_label = f"📉 기준선 숨기기" if is_on else f"📈 기준선 표시"
+                # ✅ 포커스 버튼: 클릭 시 이 지표만 단독 표시 / 다시 클릭 시 해제
+                btn_label = "🔍 포커스 해제" if is_focused else "🔍 이 지표만 보기"
                 if st.button(btn_label, key=f"btn_{metric}", use_container_width=True):
-                    st.session_state[toggle_key] = not is_on
+                    st.session_state["focused_metric"] = None if is_focused else metric
                     st.rerun()
 
             col_idx += 1
@@ -435,15 +421,17 @@ if len(selected_metrics) > 0:
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ==========================================
-    # 차트: 기본은 데이터 라인만, 토글 ON 시 해당 지표 기준선 추가
+    # 차트: 포커스 없으면 전체 라인만 / 포커스 있으면 해당 지표 + 기준선만
     # ==========================================
-    fig = go.Figure()
+    fig          = go.Figure()
     layout_axes  = {}
     annotations  = []
     chart_idx    = 0
 
-    x_start = df_all['xdatetime'].min()
-    x_end   = df_all['xdatetime'].max()
+    focused       = st.session_state.get("focused_metric", None)
+    is_focus_mode = focused is not None
+    x_start       = df_all['xdatetime'].min()
+    x_end         = df_all['xdatetime'].max()
 
     for i, metric in enumerate(selected_metrics):
         if metric not in df_all.columns:
@@ -452,12 +440,16 @@ if len(selected_metrics) > 0:
         if len(series) == 0 or (series == 0).all():
             continue
 
-        data_color = LINE_COLORS.get(metric, '#DCDCD7')
-        axis_name  = f'y{chart_idx + 1}' if chart_idx > 0 else 'y'
-        min_t, max_t = thresholds[metric]
-        is_on = st.session_state.get(f"show_threshold_{metric}", False)
+        # ✅ 포커스 모드이고 이 지표가 아니면 완전히 건너뜀
+        if is_focus_mode and metric != focused:
+            continue
 
-        # ✅ 데이터 라인 (항상 표시)
+        data_color  = LINE_COLORS.get(metric, '#DCDCD7')
+        # 포커스 모드에서는 항상 yaxis (단일 축)
+        axis_name   = 'y' if is_focus_mode else (f'y{chart_idx + 1}' if chart_idx > 0 else 'y')
+        min_t, max_t = thresholds[metric]
+
+        # 데이터 라인 (항상 표시)
         fig.add_trace(go.Scatter(
             x=df_all['xdatetime'], y=df_all[metric],
             mode='lines+markers', name=metric,
@@ -467,45 +459,40 @@ if len(selected_metrics) > 0:
             showlegend=True,
         ))
 
-        # ✅ 기준선: 토글 ON일 때만 추가
-        if is_on:
-            tc = THRESHOLD_COLORS.get(metric, {'upper': '#FFD700', 'lower': '#FF8C00'})
+        # ✅ 포커스 모드일 때만 기준선 추가
+        if is_focus_mode:
+            tc          = THRESHOLD_COLORS.get(metric, {'upper': '#FFD700', 'lower': '#FF8C00'})
             upper_color = tc['upper']
             lower_color = tc['lower']
 
             fig.add_trace(go.Scatter(
                 x=[x_start, x_end], y=[max_t, max_t],
-                mode='lines',
-                name=f'↑ 상한 {max_t}',
+                mode='lines', name=f'↑ 상한 {max_t}',
                 line=dict(color=upper_color, width=2.5, dash='dash'),
-                yaxis=axis_name,
-                showlegend=True,
+                yaxis=axis_name, showlegend=True,
             ))
             fig.add_trace(go.Scatter(
                 x=[x_start, x_end], y=[min_t, min_t],
-                mode='lines',
-                name=f'↓ 하한 {min_t}',
+                mode='lines', name=f'↓ 하한 {min_t}',
                 line=dict(color=lower_color, width=2.5, dash='dot'),
-                yaxis=axis_name,
-                showlegend=True,
+                yaxis=axis_name, showlegend=True,
             ))
-
-            # 우측 끝 라벨 annotation
             annotations.append(dict(
                 x=x_end, y=max_t, xref='x', yref=axis_name,
-                text=f'<b>상한 {max_t}</b>',
-                showarrow=False, xanchor='left', yanchor='bottom',
+                text=f'<b>상한 {max_t}</b>', showarrow=False,
+                xanchor='left', yanchor='bottom',
                 font=dict(color=upper_color, size=12),
                 bgcolor=DAEDONG['black'],
             ))
             annotations.append(dict(
                 x=x_end, y=min_t, xref='x', yref=axis_name,
-                text=f'<b>하한 {min_t}</b>',
-                showarrow=False, xanchor='left', yanchor='top',
+                text=f'<b>하한 {min_t}</b>', showarrow=False,
+                xanchor='left', yanchor='top',
                 font=dict(color=lower_color, size=12),
                 bgcolor=DAEDONG['black'],
             ))
 
+        # 축 설정
         if chart_idx == 0:
             layout_axes['yaxis'] = dict(
                 title=dict(text=f"<b>{metric}</b>", font=dict(size=16, color=data_color)),
@@ -533,7 +520,7 @@ if len(selected_metrics) > 0:
         xaxis=dict(
             title=dict(text="<b>측정 시각</b>", font=dict(size=16, color=DAEDONG['white'])),
             tickfont=dict(size=14), showgrid=True, gridcolor=DAEDONG['dark_gray'],
-            domain=[0, 0.90] if len(selected_metrics) > 2 else [0, 0.94]
+            domain=[0, 0.90] if not is_focus_mode and len(selected_metrics) > 2 else [0, 0.93]
         ),
         legend=dict(
             font=dict(size=13, color=DAEDONG['white']),
@@ -553,11 +540,11 @@ st.markdown(f"<h3 style='color: {DAEDONG['white']}; margin-top:30px;'>📋 종�
 st.markdown(f"<div style='color: {DAEDONG['medium_gray']}; font-size:16px; margin-bottom:15px;'>현재 조회된 기간의 평균값을 {current_month}월 우수농가 가이드라인과 비교하여 편차를 보여줍니다.</div>", unsafe_allow_html=True)
 
 actual = {
-    'avg_t':  df_all['내부온도(xintemp1)'].mean(),
-    'day_t':  df_all[df_all['주야간(xjuya)'] == 1.0]['내부온도(xintemp1)'].mean(),
-    'night_t':df_all[df_all['주야간(xjuya)'] == 0.0]['내부온도(xintemp1)'].mean(),
-    'hum':    df_all['내부습도(xinhum1)'].mean(),
-    'co2':    df_all['CO2농도(xco2)'].mean(),
+    'avg_t':   df_all['내부온도(xintemp1)'].mean(),
+    'day_t':   df_all[df_all['주야간(xjuya)'] == 1.0]['내부온도(xintemp1)'].mean(),
+    'night_t': df_all[df_all['주야간(xjuya)'] == 0.0]['내부온도(xintemp1)'].mean(),
+    'hum':     df_all['내부습도(xinhum1)'].mean(),
+    'co2':     df_all['CO2농도(xco2)'].mean(),
 }
 
 if not df_all['누적일사량(xsunadd)'].isnull().all():
@@ -600,17 +587,17 @@ def render_summary_card(title, act_val, guide_val, unit):
     """
 
 col1, col2, col3, col4 = st.columns(4)
-col1.markdown(render_summary_card("평균온도", actual['avg_t'],  month_guide['avg_t'],  "℃"), unsafe_allow_html=True)
-col2.markdown(render_summary_card("주간온도", actual['day_t'],  month_guide['day_t'],  "℃"), unsafe_allow_html=True)
-col3.markdown(render_summary_card("야간온도", actual['night_t'],month_guide['night_t'],"℃"), unsafe_allow_html=True)
-col4.markdown(render_summary_card("주야간차", actual['diff_t'], month_guide['diff_t'], "℃"), unsafe_allow_html=True)
+col1.markdown(render_summary_card("평균온도",  actual['avg_t'],   month_guide['avg_t'],   "℃"), unsafe_allow_html=True)
+col2.markdown(render_summary_card("주간온도",  actual['day_t'],   month_guide['day_t'],   "℃"), unsafe_allow_html=True)
+col3.markdown(render_summary_card("야간온도",  actual['night_t'], month_guide['night_t'], "℃"), unsafe_allow_html=True)
+col4.markdown(render_summary_card("주야간차",  actual['diff_t'],  month_guide['diff_t'],  "℃"), unsafe_allow_html=True)
 
 st.markdown("<div style='height: 15px;'></div>", unsafe_allow_html=True)
 
 col5, col6, col7, col8 = st.columns(4)
-col5.markdown(render_summary_card("평균습도",     actual['hum'], month_guide['hum'], "%"),   unsafe_allow_html=True)
-col6.markdown(render_summary_card("평균 CO2",     actual['co2'], month_guide['co2'], "ppm"), unsafe_allow_html=True)
-col7.markdown(render_summary_card("누적일사량(일)",actual['sun'], month_guide['sun'], "J"),   unsafe_allow_html=True)
+col5.markdown(render_summary_card("평균습도",      actual['hum'], month_guide['hum'], "%"),   unsafe_allow_html=True)
+col6.markdown(render_summary_card("평균 CO2",      actual['co2'], month_guide['co2'], "ppm"), unsafe_allow_html=True)
+col7.markdown(render_summary_card("누적일사량(일)", actual['sun'], month_guide['sun'], "J"),   unsafe_allow_html=True)
 col8.markdown(f"<div style='background-color: transparent; padding: 15px;'></div>", unsafe_allow_html=True)
 
 if auto_refresh:
