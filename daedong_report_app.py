@@ -219,13 +219,24 @@ else:
 selected_zone_label = st.sidebar.selectbox("구역 선택", options=list(zone_options.values()), index=0)
 selected_zone_id = [k for k, v in zone_options.items() if v == selected_zone_label][0]
 
-# 전체 구역 백그라운드 수집
-all_results = {}
-for zid in ZONE_CONFIG.keys():
-    success, msg = fetch_and_save_data(zid)
-    all_results[zid] = (success, msg)
+# ✅ 마지막 fetch로부터 55초 이내면 API 호출 스킵 → 버튼 클릭 딜레이 제거
+now = time.time()
+last_fetch = st.session_state.get("last_fetch_time", 0)
+need_fetch = (now - last_fetch) >= 55
 
-api_success, api_msg = all_results[selected_zone_id]
+if need_fetch:
+    all_results = {}
+    for zid in ZONE_CONFIG.keys():
+        success, msg = fetch_and_save_data(zid)
+        all_results[zid] = (success, msg)
+    st.session_state["last_fetch_results"] = all_results
+    st.session_state["last_fetch_time"] = now
+else:
+    all_results = st.session_state.get("last_fetch_results", {
+        zid: (False, "대기 중") for zid in ZONE_CONFIG.keys()
+    })
+
+api_success, api_msg = all_results.get(selected_zone_id, (False, "대기 중"))
 df_all, load_msg = load_data(selected_zone_id)
 
 st.sidebar.markdown("---")
