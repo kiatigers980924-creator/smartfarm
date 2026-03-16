@@ -8,6 +8,8 @@ import io
 import os
 import time
 import json
+import gspread
+from google.oauth2.service_account import Credentials
 
 # ==========================================
 # 1. 디자인 시스템 & 설정
@@ -64,90 +66,138 @@ GUIDE_DATA = {
 }
 
 # ==========================================
-# 3. 데이터 수집 및 저장 로직
+# 3. Google Sheets 연동 로직
 # ==========================================
-SAVE_DIR = "./data"
+SCOPES = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+HEADERS = ["xdatetime", "내부온도(xintemp1)", "내부습도(xinhum1)", "CO2농도(xco2)", "누적일사량(xsunadd)", "주야간(xjuya)"]
 
-# ✅ secrets.toml 없어도 에러 안 나는 안전한 방식
 try:
     API_BASE = st.secrets["API_BASE"]
 except Exception:
     API_BASE = "http://api.gcsmagma.com/gcs_my_api.php/Get_GCS_Data/tasmart"
 
-def get_csv_path(zone_id):
-    return os.path.join(SAVE_DIR, f"smartfarm_zone{zone_id}.csv")
+try:
+    SHEET_ID = st.secrets["SHEET_ID"]
+except Exception:
+    SHEET_ID = ""
+
+@st.cache_resource
+def get_gsheet_client():
+    """Google Sheets 인증 클라이언트 (캐시됨)"""
+    try:
+        creds = Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"], scopes=SCOPES
+        )
+        return gspread.authorize(creds)
+    except Exception as e:
+        return None
+
+def get_or_create_worksheet(client, zone_id):
+    """구역별 시트 가져오기. 없으면 헤더 포함 자동 생성."""
+    try:
+        spreadsheet = client.open_by_key(SHEET_ID)
+        sheet_name = f"zone{zone_id}"
+        try:
+            worksheet = spreadsheet.worksheet(sheet_name)
+        except gspread.exceptions.WorksheetNotFound:
+            worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=50000, cols=10)
+            worksheet.append_row(HEADERS)
+        return worksheet
+    except Exception as e:
+        return None
 
 def safe_float(val):
     try:
-        if val == "" or pd.isna(val) or val is None: return np.nan
-        return float(val)
+        if val == "" or pd.isna(val) or val is None:
+            return ""
+        f = float(val)
+        return "" if np.isnan(f) else f
     except:
-        return np.nan
+        return ""
+
+def to_sheet_val(v):
+    """np.nan 및 None → 빈 문자열로 변환 (Sheets 직렬화 오류 방지)"""
+    if v is None or v == "":
+        return ""
+    if isinstance(v, float) and np.isnan(v):
+        return ""
+    return v
 
 def fetch_and_save_data(zone_id):
-    if not os.path.exists(SAVE_DIR):
-        try:
-            os.makedirs(SAVE_DIR)
-        except Exception as e:
-            return False, f"폴더 생성 실패: {e}"
-
+    """API 호출 후 Google Sheets에 저장"""
     url = f"{API_BASE}/{zone_id}"
     headers = {'User-Agent': 'Mozilla/5.0'}
 
     try:
         resp = requests.get(url, headers=headers, timeout=5)
-        if resp.status_code == 200:
-            try:
-                data = resp.json()
-            except json.JSONDecodeError:
-                return False, f"API 응답이 JSON 형식이 아닙니다: {resp.text[:50]}"
-
-            if "fields" in data and len(data["fields"]) > 0:
-                row = data["fields"][0]
-                current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                new_row = {
-                    "xdatetime": current_time,
-                    "내부온도(xintemp1)": safe_float(row.get("xintemp1")),
-                    "내부습도(xinhum1)": safe_float(row.get("xinhum1")),
-                    "CO2농도(xco2)": safe_float(row.get("xco2")),
-                    "누적일사량(xsunadd)": safe_float(row.get("xsunadd")),
-                    "주야간(xjuya)": safe_float(row.get("xjuya"))
-                }
-                df_new = pd.DataFrame([new_row])
-                csv_path = get_csv_path(zone_id)
-                try:
-                    if not os.path.exists(csv_path):
-                        df_new.to_csv(csv_path, index=False, encoding='utf-8-sig')
-                        return True, f"[구역{zone_id}] 최초 데이터 수집 성공!"
-                    else:
-                        df_new.to_csv(csv_path, mode='a', header=False, index=False, encoding='utf-8-sig')
-                        return True, f"[구역{zone_id}] 데이터 누적 성공 ({current_time})"
-                except PermissionError:
-                    return False, f"[구역{zone_id}] CSV 저장 실패 (파일 접근 권한 없음)"
-                except Exception as e:
-                    return False, f"[구역{zone_id}] CSV 쓰기 오류: {e}"
-            else:
-                return False, f"[구역{zone_id}] 'fields' 안에 데이터 없음"
-        else:
+        if resp.status_code != 200:
             return False, f"[구역{zone_id}] HTTP 오류: {resp.status_code}"
-    except requests.exceptions.Timeout:
-        return False, f"[구역{zone_id}] 연결 시간 초과"
-    except Exception as e:
-        return False, f"[구역{zone_id}] 통신 실패: {e}"
 
-def load_data(zone_id):
-    csv_path = get_csv_path(zone_id)
-    if os.path.exists(csv_path):
         try:
-            df = pd.read_csv(csv_path)
-            if df.empty: return pd.DataFrame(), "CSV 파일이 비어 있습니다."
-            df['xdatetime'] = pd.to_datetime(df['xdatetime'])
-            for col in ['누적일사량(xsunadd)', '주야간(xjuya)']:
-                if col not in df.columns: df[col] = np.nan
-            return df, "성공"
-        except Exception as e:
-            return pd.DataFrame(), f"CSV 읽기 오류: {e}"
-    return pd.DataFrame(), "저장된 파일이 없습니다."
+            data = resp.json()
+        except json.JSONDecodeError:
+            return False, f"[구역{zone_id}] JSON 파싱 실패: {resp.text[:50]}"
+
+        if "fields" not in data or len(data["fields"]) == 0:
+            return False, f"[구역{zone_id}] fields 안에 데이터 없음"
+
+        row = data["fields"][0]
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        new_row = [
+            current_time,
+            to_sheet_val(safe_float(row.get("xintemp1"))),
+            to_sheet_val(safe_float(row.get("xinhum1"))),
+            to_sheet_val(safe_float(row.get("xco2"))),
+            to_sheet_val(safe_float(row.get("xsunadd"))),
+            to_sheet_val(safe_float(row.get("xjuya"))),
+        ]
+
+        client = get_gsheet_client()
+        if not client:
+            return False, f"[구역{zone_id}] Google 인증 실패 (secrets 확인 필요)"
+
+        worksheet = get_or_create_worksheet(client, zone_id)
+        if not worksheet:
+            return False, f"[구역{zone_id}] 시트 접근 실패 (공유 권한 확인 필요)"
+
+        worksheet.append_row(new_row, value_input_option="USER_ENTERED")
+        return True, f"[구역{zone_id}] Sheets 저장 성공 ({current_time})"
+
+    except requests.exceptions.Timeout:
+        return False, f"[구역{zone_id}] API 연결 시간 초과"
+    except Exception as e:
+        return False, f"[구역{zone_id}] 오류: {e}"
+
+@st.cache_data(ttl=55)
+def load_data(zone_id):
+    """Google Sheets에서 구역별 데이터 로드 (55초 캐시)"""
+    client = get_gsheet_client()
+    if not client:
+        return pd.DataFrame(), "Google 인증 실패"
+    try:
+        spreadsheet = client.open_by_key(SHEET_ID)
+        try:
+            worksheet = spreadsheet.worksheet(f"zone{zone_id}")
+        except gspread.exceptions.WorksheetNotFound:
+            return pd.DataFrame(), "저장된 데이터가 없습니다."
+
+        records = worksheet.get_all_records()
+        if not records:
+            return pd.DataFrame(), "저장된 데이터가 없습니다."
+
+        df = pd.DataFrame(records)
+        df['xdatetime'] = pd.to_datetime(df['xdatetime'], errors='coerce')
+        df = df.dropna(subset=['xdatetime'])
+
+        for col in ['내부온도(xintemp1)', '내부습도(xinhum1)', 'CO2농도(xco2)', '누적일사량(xsunadd)', '주야간(xjuya)']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        return df, "성공"
+
+    except Exception as e:
+        return pd.DataFrame(), f"Sheets 읽기 오류: {e}"
 
 # ==========================================
 # 4. 사이드바 구성
@@ -158,8 +208,6 @@ else:
     st.sidebar.markdown(f"<h2 style='color:{DAEDONG['red']}'>DAEDONG</h2>", unsafe_allow_html=True)
 
 st.sidebar.markdown("---")
-
-# 온실 선택 → 구역 선택 2단계 UI
 st.sidebar.subheader("🏡 온실 및 구역 선택")
 greenhouse_options = ["2ha 온실 (1~4구역)", "1ha 온실 (5~6구역)"]
 selected_greenhouse = st.sidebar.radio("온실 선택", greenhouse_options, index=0)
@@ -172,14 +220,15 @@ else:
 selected_zone_label = st.sidebar.selectbox("구역 선택", options=list(zone_options.values()), index=0)
 selected_zone_id = [k for k, v in zone_options.items() if v == selected_zone_label][0]
 
-# 선택된 구역으로 API 호출 및 데이터 로드
 api_success, api_msg = fetch_and_save_data(selected_zone_id)
 df_all, load_msg = load_data(selected_zone_id)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔄 데이터 동기화")
 auto_refresh = st.sidebar.checkbox("자동 새로고침 켜기 (1분 주기)", value=True)
-if st.sidebar.button("지금 수동 새로고침"): st.rerun()
+if st.sidebar.button("지금 수동 새로고침"):
+    st.cache_data.clear()
+    st.rerun()
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("📊 기간 및 데이터 필터")
@@ -257,19 +306,18 @@ with col_info:
 
 st.markdown("<hr style='margin-top: 5px; margin-bottom: 10px;'>", unsafe_allow_html=True)
 
-if not api_success: st.error(f"⚠️ [API 수집 실패] {api_msg}")
-else: st.success(f"✅ [API 수집 성공] {api_msg}")
+if not api_success:
+    st.error(f"⚠️ [API/Sheets 실패] {api_msg}")
+else:
+    st.success(f"✅ [저장 성공] {api_msg}")
 
-if load_msg != "성공" and load_msg != "저장된 파일이 없습니다.":
-    st.error(f"⚠️ [파일 로드 실패] {load_msg}")
+if load_msg != "성공" and load_msg != "저장된 데이터가 없습니다.":
+    st.error(f"⚠️ [데이터 로드 실패] {load_msg}")
 
 if len(df_all) == 0:
-    st.warning("현재 화면에 표시할 데이터가 없습니다. API 수집 후 새로고침 해주세요.")
+    st.warning("현재 화면에 표시할 데이터가 없습니다. 잠시 후 새로고침 해주세요.")
     st.stop()
 
-# ==========================================
-# 6. 상단 요약 카드
-# ==========================================
 # ==========================================
 # 6. 상단 요약 카드
 # ==========================================
@@ -288,12 +336,11 @@ if len(selected_metrics) > 0:
         cols = st.columns(len(valid_metrics))
         col_idx = 0
 
-        # ✅ 색상값 변수로 미리 추출 → f-string 내 중첩 따옴표 방지
-        c_dark    = DAEDONG['dark_gray']
-        c_medium  = DAEDONG['medium_gray']
-        c_light   = DAEDONG['light_gray']
-        c_white   = DAEDONG['white']
-        c_red     = DAEDONG['red']
+        c_dark   = DAEDONG['dark_gray']
+        c_medium = DAEDONG['medium_gray']
+        c_light  = DAEDONG['light_gray']
+        c_white  = DAEDONG['white']
+        c_red    = DAEDONG['red']
 
         for metric in selected_metrics:
             if metric not in df_all.columns:
@@ -332,7 +379,6 @@ if len(selected_metrics) > 0:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # 차트
     fig = go.Figure()
     line_colors = [DAEDONG['future_green_light'], DAEDONG['red'], DAEDONG['light_gray']]
     layout_axes = {}
@@ -340,9 +386,7 @@ if len(selected_metrics) > 0:
     for i, metric in enumerate(selected_metrics):
         if metric not in df_all.columns:
             continue
-
         series = df_all[metric].dropna()
-        # ✅ 차트에서도 전부 0인 센서는 제외
         if len(series) == 0 or (series == 0).all():
             continue
 
@@ -359,33 +403,18 @@ if len(selected_metrics) > 0:
             annotation_font_color=DAEDONG['medium_gray']
         )
         if i == 0:
-            layout_axes['yaxis'] = dict(
-                title=dict(text=f"<b>{metric}</b>", font=dict(size=16, color=line_colors[0])),
-                showgrid=True, gridcolor=DAEDONG['dark_gray'], tickfont=dict(size=14, color=line_colors[0])
-            )
+            layout_axes['yaxis'] = dict(title=dict(text=f"<b>{metric}</b>", font=dict(size=16, color=line_colors[0])), showgrid=True, gridcolor=DAEDONG['dark_gray'], tickfont=dict(size=14, color=line_colors[0]))
         elif i == 1:
-            layout_axes['yaxis2'] = dict(
-                title=dict(text=f"<b>{metric}</b>", font=dict(size=16, color=line_colors[1])),
-                overlaying='y', side='right', showgrid=False, tickfont=dict(size=14, color=line_colors[1])
-            )
+            layout_axes['yaxis2'] = dict(title=dict(text=f"<b>{metric}</b>", font=dict(size=16, color=line_colors[1])), overlaying='y', side='right', showgrid=False, tickfont=dict(size=14, color=line_colors[1]))
         elif i == 2:
-            layout_axes['yaxis3'] = dict(
-                title=dict(text=f"<b>{metric}</b>", font=dict(size=16, color=line_colors[2])),
-                overlaying='y', side='right', position=0.92, anchor="free",
-                showgrid=False, tickfont=dict(size=14, color=line_colors[2])
-            )
+            layout_axes['yaxis3'] = dict(title=dict(text=f"<b>{metric}</b>", font=dict(size=16, color=line_colors[2])), overlaying='y', side='right', position=0.92, anchor="free", showgrid=False, tickfont=dict(size=14, color=line_colors[2]))
 
     fig.update_layout(
         paper_bgcolor=DAEDONG['black'], plot_bgcolor=DAEDONG['black'],
         font=dict(color=DAEDONG['light_gray'], size=14),
-        xaxis=dict(
-            title=dict(text="<b>측정 시각</b>", font=dict(size=16, color=DAEDONG['white'])),
-            tickfont=dict(size=14), showgrid=True, gridcolor=DAEDONG['dark_gray'],
-            domain=[0, 0.9] if len(selected_metrics) > 2 else [0, 1]
-        ),
+        xaxis=dict(title=dict(text="<b>측정 시각</b>", font=dict(size=16, color=DAEDONG['white'])), tickfont=dict(size=14), showgrid=True, gridcolor=DAEDONG['dark_gray'], domain=[0, 0.9] if len(selected_metrics) > 2 else [0, 1]),
         legend=dict(font=dict(size=16, color=DAEDONG['white']), orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        margin=dict(l=20, r=20 if len(selected_metrics) <= 2 else 60, t=60, b=20),
-        height=500, **layout_axes
+        margin=dict(l=20, r=20 if len(selected_metrics) <= 2 else 60, t=60, b=20), height=500, **layout_axes
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -415,7 +444,6 @@ actual['diff_t'] = (
     else np.nan
 )
 
-# ✅ CO2가 전부 0이면 nan 처리 (가이드라인 비교 의미 없음)
 co2_series = df_all['CO2농도(xco2)'].dropna()
 if len(co2_series) == 0 or (co2_series == 0).all():
     actual['co2'] = np.nan
