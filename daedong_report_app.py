@@ -20,6 +20,13 @@ DAEDONG = {
     'future_green': '#00677B', 'white': '#FFFFFF', 'blue': '#4DA8DA'
 }
 
+# ✅ 점선 색상: 흰색/청록 대신 뚜렷한 고대비 색상으로 교체
+THRESHOLD_COLORS = {
+    0: {'upper': '#FFD700', 'lower': '#FF8C00'},  # 황금/오렌지 (1번째 지표)
+    1: {'upper': '#FF69B4', 'lower': '#DA70D6'},  # 핫핑크/보라 (2번째 지표)
+    2: {'upper': '#00FF7F', 'lower': '#00CED1'},  # 연두/청록 (3번째 지표)
+}
+
 ZONE_CONFIG = {
     1: {'name': '1구역', 'greenhouse': '2ha 온실'},
     2: {'name': '2구역', 'greenhouse': '2ha 온실'},
@@ -346,37 +353,43 @@ if len(selected_metrics) > 0:
             all_zero = len(series) == 0 or (series == 0).all()
 
             if all_zero:
-                ratio_html = f'<div style="color:{c_medium}; font-size:20px; font-weight:bold; margin-bottom:15px;">센서 데이터 없음</div>'
-                bottom_html = f'<div style="color:{c_medium}; font-size:14px;">수집된 유효 데이터가 없습니다</div>'
-                signal_html = f'<div style="font-size:13px; color:{c_medium}; margin-top:12px;">현재값: -</div>'
+                ratio_html   = f'<div style="color:{c_medium}; font-size:20px; font-weight:bold; margin-bottom:15px;">센서 데이터 없음</div>'
+                bottom_html  = f'<div style="color:{c_medium}; font-size:15px;">수집된 유효 데이터가 없습니다</div>'
+                signal_html  = f'<div style="font-size:15px; color:{c_medium}; margin-top:14px;">현재값: -</div>'
             else:
                 comp_ratio, viol_mins = analyze_violation(df_all[metric], min_t, max_t)
-                avg_val = round(series.mean(), 1)
+                avg_val    = round(series.mean(), 1)
                 latest_val = round(series.iloc[-1], 1)
                 viol_color = c_red if viol_mins > 0 else c_light
+
                 ratio_html = f'<div style="color:{c_white}; font-size:36px; font-weight:bold; margin-bottom:15px;">준수율 {comp_ratio}%</div>'
                 bottom_html = (
-                    f'<div style="display:flex; justify-content:space-around; font-size:16px; color:{c_light}; font-weight:bold;">'
+                    f'<div style="display:flex; justify-content:space-around; font-size:17px; color:{c_light}; font-weight:bold;">'
                     f'<div>평균: {avg_val}</div>'
                     f'<div style="color:{viol_color}">이탈: {viol_mins}분</div>'
                     f'</div>'
                 )
 
-                # ✅ 신호등: 현재값이 Safe Zone 안/밖 판단
-                in_zone = min_t <= latest_val <= max_t
-                signal_color = c_green if in_zone else c_red
-                signal_icon  = "🟢" if in_zone else "🔴"
-                signal_text  = "Safe Zone 이내" if in_zone else "Safe Zone 이탈"
+                # ✅ 신호등 — 크기 대폭 확대
+                in_zone      = min_t <= latest_val <= max_t
+                signal_color = '#00DD88' if in_zone else c_red
+                signal_icon  = '🟢' if in_zone else '🔴'
+                signal_text  = 'Safe Zone 이내' if in_zone else 'Safe Zone 이탈!'
                 signal_html  = (
-                    f'<div style="margin-top:12px; padding:6px 10px; border-radius:6px; '
-                    f'background-color:{DAEDONG["black"]}; font-size:13px; font-weight:bold; color:{signal_color};">'
-                    f'{signal_icon} 현재 {latest_val} — {signal_text}'
-                    f'<br><span style="color:{c_medium}; font-weight:normal;">기준 {min_t} ~ {max_t}</span>'
+                    f'<div style="margin-top:14px; padding:10px 14px; border-radius:8px; '
+                    f'background-color:{DAEDONG["black"]}; border: 1px solid {signal_color};">'
+                    f'<div style="font-size:22px; font-weight:bold; color:{signal_color};">'
+                    f'{signal_icon} 현재값 {latest_val}</div>'
+                    f'<div style="font-size:18px; font-weight:bold; color:{signal_color}; margin-top:4px;">'
+                    f'{signal_text}</div>'
+                    f'<div style="font-size:14px; color:{c_medium}; margin-top:6px;">'
+                    f'기준 범위: {min_t} ~ {max_t}</div>'
                     f'</div>'
                 )
 
             card_html = (
-                f'<div style="background-color:{c_dark}; padding:25px 20px; border-radius:8px; text-align:center; border:1px solid {c_medium};">'
+                f'<div style="background-color:{c_dark}; padding:25px 20px; border-radius:8px; '
+                f'text-align:center; border:1px solid {c_medium};">'
                 f'<div style="color:{c_light}; font-size:18px; font-weight:bold; margin-bottom:12px;">{metric}</div>'
                 f'{ratio_html}'
                 f'{bottom_html}'
@@ -390,11 +403,17 @@ if len(selected_metrics) > 0:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ✅ 방향 1: 음영 제거 → 상한/하한 점선만 표시
+    # ==========================================
+    # 차트: 점선 고대비 색상 + 우측 끝 라벨 annotation
+    # ==========================================
     fig = go.Figure()
     line_colors = [DAEDONG['future_green_light'], DAEDONG['red'], DAEDONG['light_gray']]
     layout_axes = {}
-    chart_metric_idx = 0  # 실제 트레이스가 추가된 수 카운트
+    chart_metric_idx = 0
+    annotations = []
+
+    x_end = df_all['xdatetime'].max()
+    x_start = df_all['xdatetime'].min()
 
     for i, metric in enumerate(selected_metrics):
         if metric not in df_all.columns:
@@ -403,7 +422,10 @@ if len(selected_metrics) > 0:
         if len(series) == 0 or (series == 0).all():
             continue
 
-        color = line_colors[chart_metric_idx % len(line_colors)]
+        data_color = line_colors[chart_metric_idx % len(line_colors)]
+        tc = THRESHOLD_COLORS[chart_metric_idx % len(THRESHOLD_COLORS)]
+        upper_color = tc['upper']
+        lower_color = tc['lower']
         axis_name = f'y{chart_metric_idx + 1}' if chart_metric_idx > 0 else 'y'
         min_t, max_t = thresholds[metric]
 
@@ -411,52 +433,66 @@ if len(selected_metrics) > 0:
         fig.add_trace(go.Scatter(
             x=df_all['xdatetime'], y=df_all[metric],
             mode='lines+markers', name=metric,
-            line=dict(color=color, width=2.5),
+            line=dict(color=data_color, width=2.5),
             marker=dict(size=4),
             yaxis=axis_name
         ))
 
-        # ✅ 상한선 점선
+        # ✅ 상한선 — 굵고 뚜렷한 고대비 색상 dash
         fig.add_trace(go.Scatter(
-            x=[df_all['xdatetime'].min(), df_all['xdatetime'].max()],
-            y=[max_t, max_t],
+            x=[x_start, x_end], y=[max_t, max_t],
             mode='lines',
-            name=f'{metric} 상한 ({max_t})',
-            line=dict(color=color, width=1.5, dash='dash'),
+            name=f'↑상한 {max_t}',
+            line=dict(color=upper_color, width=2.5, dash='dash'),
             yaxis=axis_name,
             showlegend=True,
-            opacity=0.7
         ))
 
-        # ✅ 하한선 점선
+        # ✅ 하한선 — 굵고 뚜렷한 고대비 색상 dot
         fig.add_trace(go.Scatter(
-            x=[df_all['xdatetime'].min(), df_all['xdatetime'].max()],
-            y=[min_t, min_t],
+            x=[x_start, x_end], y=[min_t, min_t],
             mode='lines',
-            name=f'{metric} 하한 ({min_t})',
-            line=dict(color=color, width=1.5, dash='dot'),
+            name=f'↓하한 {min_t}',
+            line=dict(color=lower_color, width=2.5, dash='dot'),
             yaxis=axis_name,
             showlegend=True,
-            opacity=0.7
+        ))
+
+        # ✅ 우측 끝 라벨 annotation → 점선 겹쳐도 각각 식별 가능
+        annotations.append(dict(
+            x=x_end, y=max_t, xref='x', yref=axis_name,
+            text=f'<b>상한 {max_t}</b>',
+            showarrow=False,
+            xanchor='left', yanchor='bottom',
+            font=dict(color=upper_color, size=12),
+            bgcolor=DAEDONG['black'],
+        ))
+        annotations.append(dict(
+            x=x_end, y=min_t, xref='x', yref=axis_name,
+            text=f'<b>하한 {min_t}</b>',
+            showarrow=False,
+            xanchor='left', yanchor='top',
+            font=dict(color=lower_color, size=12),
+            bgcolor=DAEDONG['black'],
         ))
 
         if chart_metric_idx == 0:
             layout_axes['yaxis'] = dict(
-                title=dict(text=f"<b>{metric}</b>", font=dict(size=16, color=color)),
+                title=dict(text=f"<b>{metric}</b>", font=dict(size=16, color=data_color)),
                 showgrid=True, gridcolor=DAEDONG['dark_gray'],
-                tickfont=dict(size=14, color=color)
+                tickfont=dict(size=14, color=data_color)
             )
         elif chart_metric_idx == 1:
             layout_axes['yaxis2'] = dict(
-                title=dict(text=f"<b>{metric}</b>", font=dict(size=16, color=color)),
+                title=dict(text=f"<b>{metric}</b>", font=dict(size=16, color=data_color)),
                 overlaying='y', side='right', showgrid=False,
-                tickfont=dict(size=14, color=color)
+                tickfont=dict(size=14, color=data_color)
             )
         elif chart_metric_idx == 2:
             layout_axes['yaxis3'] = dict(
-                title=dict(text=f"<b>{metric}</b>", font=dict(size=16, color=color)),
+                title=dict(text=f"<b>{metric}</b>", font=dict(size=16, color=data_color)),
                 overlaying='y', side='right', position=0.92, anchor="free",
-                showgrid=False, tickfont=dict(size=14, color=color)
+                showgrid=False, tickfont=dict(size=14, color=data_color)
             )
 
         chart_metric_idx += 1
@@ -467,14 +503,15 @@ if len(selected_metrics) > 0:
         xaxis=dict(
             title=dict(text="<b>측정 시각</b>", font=dict(size=16, color=DAEDONG['white'])),
             tickfont=dict(size=14), showgrid=True, gridcolor=DAEDONG['dark_gray'],
-            domain=[0, 0.9] if len(selected_metrics) > 2 else [0, 1]
+            domain=[0, 0.88] if len(selected_metrics) > 2 else [0, 0.93]
         ),
         legend=dict(
             font=dict(size=13, color=DAEDONG['white']),
             orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
             bgcolor="rgba(0,0,0,0)"
         ),
-        margin=dict(l=20, r=20 if len(selected_metrics) <= 2 else 60, t=60, b=20),
+        annotations=annotations,
+        margin=dict(l=20, r=80, t=60, b=20),
         height=500, **layout_axes
     )
     st.plotly_chart(fig, use_container_width=True)
