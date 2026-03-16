@@ -303,10 +303,13 @@ if st.sidebar.button("📥 선택 월 가이드 불러오기", use_container_wid
     defaults = get_default_thresholds(guide)
     for metric in available_metrics:
         mn, mx = defaults[metric]
+        # ✅ 위젯 key를 직접 업데이트해야 화면에 반영됨
+        st.session_state[f"input_min_{metric}"] = mn
+        st.session_state[f"input_max_{metric}"] = mx
         st.session_state[f"guide_min_{metric}"] = mn
         st.session_state[f"guide_max_{metric}"] = mx
     st.session_state["guide_loaded_month"] = selected_guide_month
-    st.sidebar.success(f"✅ {selected_guide_month}월 가이드 불러옴 (±5%)")
+    st.rerun()  # ✅ 즉시 반영
 
 # 로드된 월 표시
 loaded_month = st.session_state.get("guide_loaded_month", None)
@@ -332,16 +335,23 @@ metric_labels = {
 for metric in selected_metrics:
     st.sidebar.markdown(f"**{metric_labels.get(metric, metric)}**")
     c1, c2 = st.sidebar.columns(2)
-    mn = c1.number_input(
-        "Min", step=0.5,
-        value=float(st.session_state[f"guide_min_{metric}"]),
-        key=f"input_min_{metric}"
-    )
-    mx = c2.number_input(
-        "Max", step=0.5,
-        value=float(st.session_state[f"guide_max_{metric}"]),
-        key=f"input_max_{metric}"
-    )
+    # ✅ 지표별 step 분리
+step_map = {
+    '내부온도(xintemp1)': 0.5,
+    '내부습도(xinhum1)': 1.0,
+    'CO2농도(xco2)': 5.0,
+}
+step = step_map.get(metric, 0.5)
+mn = c1.number_input(
+    "Min", step=step,
+    value=float(st.session_state[f"guide_min_{metric}"]),
+    key=f"input_min_{metric}"
+)
+mx = c2.number_input(
+    "Max", step=step,
+    value=float(st.session_state[f"guide_max_{metric}"]),
+    key=f"input_max_{metric}"
+)
     # session_state 동기화
     st.session_state[f"guide_min_{metric}"] = mn
     st.session_state[f"guide_max_{metric}"] = mx
