@@ -5,5 +5,3 @@ requests
 plotly
 xlsxwriter
 openpyxl
-gspread
-google-auth

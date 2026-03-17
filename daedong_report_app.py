@@ -8,8 +8,6 @@ import io
 import os
 import time
 import json
-import gspread
-from google.oauth2.service_account import Credentials
 
 # ==========================================
 # 1. 디자인 시스템 & 설정
@@ -99,43 +97,19 @@ def get_default_thresholds(guide, pct=0.05):
     }
 
 # ==========================================
-# 3. Google Sheets 연동 로직
+# 3. 로컬 CSV 저장 로직
 # ==========================================
-SCOPES = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 HEADERS = ["xdatetime", "내부온도(xintemp1)", "내부습도(xinhum1)", "CO2농도(xco2)", "누적일사량(xsunadd)", "주야간(xjuya)"]
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 try:
     API_BASE = st.secrets["API_BASE"]
 except Exception:
     API_BASE = "http://api.gcsmagma.com/gcs_my_api.php/Get_GCS_Data/tasmart"
 
-try:
-    SHEET_ID = st.secrets["SHEET_ID"]
-except Exception:
-    SHEET_ID = ""
-
-@st.cache_resource
-def get_gsheet_client():
-    try:
-        creds = Credentials.from_service_account_info(
-            st.secrets["gcp_service_account"], scopes=SCOPES
-        )
-        return gspread.authorize(creds)
-    except Exception:
-        return None
-
-def get_or_create_worksheet(client, zone_id):
-    try:
-        spreadsheet = client.open_by_key(SHEET_ID)
-        sheet_name = f"zone{zone_id}"
-        try:
-            worksheet = spreadsheet.worksheet(sheet_name)
-        except gspread.exceptions.WorksheetNotFound:
-            worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=50000, cols=10)
-            worksheet.append_row(HEADERS)
-        return worksheet
-    except Exception:
-        return None
+def get_zone_csv_path(zone_id):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    return os.path.join(DATA_DIR, f"zone{zone_id}.csv")
 
 def safe_float(val):
     try:
@@ -145,13 +119,6 @@ def safe_float(val):
         return "" if np.isnan(f) else f
     except:
         return ""
-
-def to_sheet_val(v):
-    if v is None or v == "":
-        return ""
-    if isinstance(v, float) and np.isnan(v):
-        return ""
-    return v
 
 def fetch_and_save_data(zone_id):
     url = f"{API_BASE}/{zone_id}"
@@ -168,22 +135,23 @@ def fetch_and_save_data(zone_id):
             return False, f"[구역{zone_id}] fields 안에 데이터 없음"
         row = data["fields"][0]
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        new_row = [
-            current_time,
-            to_sheet_val(safe_float(row.get("xintemp1"))),
-            to_sheet_val(safe_float(row.get("xinhum1"))),
-            to_sheet_val(safe_float(row.get("xco2"))),
-            to_sheet_val(safe_float(row.get("xsunadd"))),
-            to_sheet_val(safe_float(row.get("xjuya"))),
-        ]
-        client = get_gsheet_client()
-        if not client:
-            return False, f"[구역{zone_id}] Google 인증 실패"
-        worksheet = get_or_create_worksheet(client, zone_id)
-        if not worksheet:
-            return False, f"[구역{zone_id}] 시트 접근 실패"
-        worksheet.append_row(new_row, value_input_option="USER_ENTERED")
-        return True, f"[구역{zone_id}] Sheets 저장 성공 ({current_time})"
+
+        def _safe(v):
+            r = safe_float(v)
+            return r if r != "" else np.nan
+
+        new_row = {
+            "xdatetime":        current_time,
+            "내부온도(xintemp1)": _safe(row.get("xintemp1")),
+            "내부습도(xinhum1)":  _safe(row.get("xinhum1")),
+            "CO2농도(xco2)":     _safe(row.get("xco2")),
+            "누적일사량(xsunadd)": _safe(row.get("xsunadd")),
+            "주야간(xjuya)":      _safe(row.get("xjuya")),
+        }
+        csv_path = get_zone_csv_path(zone_id)
+        write_header = not os.path.exists(csv_path)
+        pd.DataFrame([new_row]).to_csv(csv_path, mode='a', index=False, header=write_header)
+        return True, f"[구역{zone_id}] 로컬 저장 성공 ({current_time})"
     except requests.exceptions.Timeout:
         return False, f"[구역{zone_id}] API 연결 시간 초과"
     except Exception as e:
@@ -191,24 +159,14 @@ def fetch_and_save_data(zone_id):
 
 @st.cache_data(ttl=55)
 def load_data(zone_id):
-    client = get_gsheet_client()
-    if not client:
-        return pd.DataFrame(), "Google 인증 실패"
+    csv_path = get_zone_csv_path(zone_id)
+    if not os.path.exists(csv_path):
+        return pd.DataFrame(), "저장된 데이터가 없습니다."
     try:
-        spreadsheet = client.open_by_key(SHEET_ID)
-        try:
-            worksheet = spreadsheet.worksheet(f"zone{zone_id}")
-        except gspread.exceptions.WorksheetNotFound:
+        df = pd.read_csv(csv_path)
+        if df.empty:
             return pd.DataFrame(), "저장된 데이터가 없습니다."
-        all_values = worksheet.get_all_values()
-        if len(all_values) < 2:
-            return pd.DataFrame(), "저장된 데이터가 없습니다."
-        first_row = all_values[0]
-        if first_row[0] == 'xdatetime':
-            df = pd.DataFrame(all_values[1:], columns=all_values[0])
-        else:
-            df = pd.DataFrame(all_values, columns=HEADERS)
-        df = df[df['xdatetime'] != '']
+        df = df[df['xdatetime'].notna() & (df['xdatetime'] != '')]
         if df.empty:
             return pd.DataFrame(), "저장된 데이터가 없습니다."
         df['xdatetime'] = pd.to_datetime(df['xdatetime'], errors='coerce')
@@ -218,7 +176,7 @@ def load_data(zone_id):
                 df[col] = pd.to_numeric(df[col], errors='coerce')
         return df, "성공"
     except Exception as e:
-        return pd.DataFrame(), f"Sheets 읽기 오류: {e}"
+        return pd.DataFrame(), f"CSV 읽기 오류: {e}"
 
 # ==========================================
 # 4. 사이드바 구성
